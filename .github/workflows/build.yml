@@ -201,44 +201,6 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict><key>Filter</key><dict><key>Bundles</key><array><string>com.apple.springboard</string></array></dict></dict></plist>
           MAYEOF
-          cat > MaytationPrefs.plist <<'MAYEOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>entry</key>
-            <dict>
-              <key>cell</key><string>PSLinkCell</string>
-              <key>label</key><string>Maytation</string>
-            </dict>
-            <key>title</key><string>Maytation</string>
-            <key>items</key>
-            <array>
-              <dict>
-                <key>cell</key><string>PSGroupCell</string>
-                <key>label</key><string>Встряхни телефон, и иконки упадут</string>
-                <key>footerText</key><string>Повторное встряхивание возвращает иконки на места.</string>
-              </dict>
-              <dict>
-                <key>cell</key><string>PSSwitchCell</string>
-                <key>label</key><string>Включить Maytation</string>
-                <key>default</key><true/>
-                <key>defaults</key><string>local.maytation</string>
-                <key>key</key><string>enabled</string>
-              </dict>
-              <dict>
-                <key>cell</key><string>PSSliderCell</string>
-                <key>default</key><real>3</real>
-                <key>defaults</key><string>local.maytation</string>
-                <key>key</key><string>strength</string>
-                <key>min</key><real>0.5</real>
-                <key>max</key><real>8</real>
-                <key>showValue</key><true/>
-              </dict>
-            </array>
-          </dict>
-          </plist>
-          MAYEOF
           cat > control <<'MAYEOF'
           Package: local.maytation
           Name: Maytation
@@ -250,36 +212,404 @@ jobs:
           Section: Tweaks
           Depends: ellekit | mobilesubstrate
           MAYEOF
+          cat > PrefsController.m <<'MAYEOF'
+          // Maytation settings pane with an English / Russian switch (English by default).
+          #import <UIKit/UIKit.h>
+
+          @interface PSSpecifier : NSObject
+          @end
+
+          @interface PSListController : UIViewController
+          - (NSArray *)loadSpecifiersFromPlistName:(NSString *)name target:(id)target;
+          - (void)reloadSpecifiers;
+          - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
+          @end
+
+          #define kDomain CFSTR("local.maytation")
+
+          static NSString *currentLang(void) {
+              CFPreferencesAppSynchronize(kDomain);
+              CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("language"), kDomain);
+              NSString *r = @"en";
+              if (v) {
+                  if (CFGetTypeID(v) == CFStringGetTypeID() && [(__bridge NSString *)v isEqualToString:@"ru"]) r = @"ru";
+                  CFRelease(v);
+              }
+              return r;
+          }
+
+          @interface MYTRootListController : PSListController
+          @property (nonatomic, copy) NSString *loadedLang;
+          @end
+
+          @implementation MYTRootListController
+
+          - (NSArray *)specifiers {
+              NSArray *s = nil;
+              @try { s = [self valueForKey:@"_specifiers"]; } @catch (__unused id e) {}
+              if (!s) {
+                  NSString *lang = currentLang();
+                  NSString *plist = [lang isEqualToString:@"ru"] ? @"RootRU" : @"RootEN";
+                  s = [self loadSpecifiersFromPlistName:plist target:self];
+                  @try { [self setValue:s forKey:@"_specifiers"]; } @catch (__unused id e) {}
+                  self.loadedLang = lang;
+              }
+              return s;
+          }
+
+          - (void)refreshIfLangChanged {
+              if (self.loadedLang && ![self.loadedLang isEqualToString:currentLang()]) {
+                  @try { [self setValue:nil forKey:@"_specifiers"]; } @catch (__unused id e) {}
+                  [self reloadSpecifiers];
+              }
+          }
+
+          - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+              [super setPreferenceValue:value specifier:specifier];
+              [self refreshIfLangChanged];
+          }
+
+          - (void)viewWillAppear:(BOOL)animated {
+              [super viewWillAppear:animated];
+              [self refreshIfLangChanged];
+          }
+
+          @end
+          MAYEOF
+          cat > RootEN.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>items</key>
+          	<array>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>footerText</key>
+          			<string>Default language is English.</string>
+          			<key>label</key>
+          			<string>Language</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSLinkListCell</string>
+          			<key>default</key>
+          			<string>en</string>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>detail</key>
+          			<string>PSListItemsController</string>
+          			<key>key</key>
+          			<string>language</string>
+          			<key>label</key>
+          			<string>Language</string>
+          			<key>validTitles</key>
+          			<array>
+          				<string>English</string>
+          				<string>Русский</string>
+          			</array>
+          			<key>validValues</key>
+          			<array>
+          				<string>en</string>
+          				<string>ru</string>
+          			</array>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>footerText</key>
+          			<string>Shake again to put the icons back.</string>
+          			<key>label</key>
+          			<string>Shake your phone and the icons fall</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>enabled</string>
+          			<key>label</key>
+          			<string>Enable Maytation</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Gravity strength</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>3.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>strength</string>
+          			<key>max</key>
+          			<real>8.0</real>
+          			<key>min</key>
+          			<real>0.5</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
+          	</array>
+          	<key>title</key>
+          	<string>Maytation</string>
+          </dict>
+          </plist>
+          MAYEOF
+          cat > RootRU.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>items</key>
+          	<array>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>footerText</key>
+          			<string>По умолчанию английский.</string>
+          			<key>label</key>
+          			<string>Язык</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSLinkListCell</string>
+          			<key>default</key>
+          			<string>en</string>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>detail</key>
+          			<string>PSListItemsController</string>
+          			<key>key</key>
+          			<string>language</string>
+          			<key>label</key>
+          			<string>Язык</string>
+          			<key>validTitles</key>
+          			<array>
+          				<string>English</string>
+          				<string>Русский</string>
+          			</array>
+          			<key>validValues</key>
+          			<array>
+          				<string>en</string>
+          				<string>ru</string>
+          			</array>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>footerText</key>
+          			<string>Повторное встряхивание вернёт иконки на места.</string>
+          			<key>label</key>
+          			<string>Встряхни телефон, и иконки упадут</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>enabled</string>
+          			<key>label</key>
+          			<string>Включить Maytation</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Сила гравитации</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>3.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>strength</string>
+          			<key>max</key>
+          			<real>8.0</real>
+          			<key>min</key>
+          			<real>0.5</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
+          	</array>
+          	<key>title</key>
+          	<string>Maytation</string>
+          </dict>
+          </plist>
+          MAYEOF
+          cat > PrefsFallback.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>entry</key>
+          	<dict>
+          		<key>cell</key>
+          		<string>PSLinkCell</string>
+          		<key>label</key>
+          		<string>Maytation</string>
+          	</dict>
+          	<key>items</key>
+          	<array>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>footerText</key>
+          			<string>Shake again to put the icons back.</string>
+          			<key>label</key>
+          			<string>Shake your phone and the icons fall</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>enabled</string>
+          			<key>label</key>
+          			<string>Enable Maytation</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Gravity strength</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>3.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>strength</string>
+          			<key>max</key>
+          			<real>8.0</real>
+          			<key>min</key>
+          			<real>0.5</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
+          	</array>
+          	<key>title</key>
+          	<string>Maytation</string>
+          </dict>
+          </plist>
+          MAYEOF
+          cat > PrefsEntry.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>entry</key>
+          	<dict>
+          		<key>bundle</key>
+          		<string>MaytationPrefs</string>
+          		<key>cell</key>
+          		<string>PSLinkCell</string>
+          		<key>detail</key>
+          		<string>MYTRootListController</string>
+          		<key>isController</key>
+          		<true/>
+          		<key>label</key>
+          		<string>Maytation</string>
+          	</dict>
+          </dict>
+          </plist>
+          MAYEOF
+          cat > PrefsInfo.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>CFBundleDevelopmentRegion</key>
+          	<string>en</string>
+          	<key>CFBundleExecutable</key>
+          	<string>MaytationPrefs</string>
+          	<key>CFBundleIdentifier</key>
+          	<string>local.maytationprefs</string>
+          	<key>CFBundleInfoDictionaryVersion</key>
+          	<string>6.0</string>
+          	<key>CFBundleName</key>
+          	<string>MaytationPrefs</string>
+          	<key>CFBundlePackageType</key>
+          	<string>BNDL</string>
+          	<key>CFBundleShortVersionString</key>
+          	<string>0.1.0</string>
+          	<key>CFBundleVersion</key>
+          	<string>1</string>
+          	<key>NSPrincipalClass</key>
+          	<string>MYTRootListController</string>
+          </dict>
+          </plist>
+          MAYEOF
           ls -la
 
       - name: Install tools
         run: brew install ldid dpkg
 
-      - name: Compile (no Theos, plain clang from Xcode)
+      - name: Compile tweak (plain clang from Xcode)
         run: |
           set -ex
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          COMMON="-isysroot $SDK -miphoneos-version-min=14.0 -dynamiclib -fobjc-arc -fmodules -Wno-deprecated-declarations -O2 -framework UIKit -framework CoreMotion -framework QuartzCore -framework Foundation -install_name /Library/MobileSubstrate/DynamicLibraries/Maytation.dylib"
-          if xcrun --sdk iphoneos clang -arch arm64 -arch arm64e $COMMON Tweak.m -o Maytation.dylib; then
+          COMMON="-isysroot $SDK -miphoneos-version-min=14.0 -fobjc-arc -fmodules -Wno-deprecated-declarations -O2 -framework UIKit -framework Foundation"
+          TW="$COMMON -dynamiclib -framework CoreMotion -framework QuartzCore -install_name /Library/MobileSubstrate/DynamicLibraries/Maytation.dylib"
+          if xcrun --sdk iphoneos clang -arch arm64 -arch arm64e $TW Tweak.m -o Maytation.dylib; then
             echo "built arm64 + arm64e"
           else
             echo "arm64e failed, building arm64 only"
-            xcrun --sdk iphoneos clang -arch arm64 $COMMON Tweak.m -o Maytation.dylib
+            xcrun --sdk iphoneos clang -arch arm64 $TW Tweak.m -o Maytation.dylib
           fi
           ldid -S Maytation.dylib
           lipo -info Maytation.dylib
           otool -L Maytation.dylib
-          otool -l Maytation.dylib | grep -A4 LC_BUILD_VERSION || true
+
+      - name: Compile settings pane (optional, falls back to a simple pane)
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          PF="-isysroot $SDK -miphoneos-version-min=14.0 -fobjc-arc -Wno-deprecated-declarations -O2 -bundle -undefined dynamic_lookup -framework UIKit -framework Foundation"
+          if xcrun --sdk iphoneos clang -arch arm64 -arch arm64e $PF PrefsController.m -o MaytationPrefs \
+             || xcrun --sdk iphoneos clang -arch arm64 $PF PrefsController.m -o MaytationPrefs; then
+            ldid -S MaytationPrefs && lipo -info MaytationPrefs && touch prefs_ok
+          else
+            echo "settings pane failed to compile, using the simple pane"
+          fi
 
       - name: Build deb (iphoneos-arm64e, rootful /Library)
         run: |
           set -ex
           mkdir -p pkg/DEBIAN pkg/Library/MobileSubstrate/DynamicLibraries pkg/Library/PreferenceLoader/Preferences out
           cp Maytation.dylib Maytation.plist pkg/Library/MobileSubstrate/DynamicLibraries/
-          cp MaytationPrefs.plist pkg/Library/PreferenceLoader/Preferences/Maytation.plist
+          chmod 755 pkg/Library/MobileSubstrate/DynamicLibraries/Maytation.dylib
+          if [ -f prefs_ok ]; then
+            B=pkg/Library/PreferenceBundles/MaytationPrefs.bundle
+            mkdir -p "$B"
+            cp MaytationPrefs "$B/MaytationPrefs"
+            chmod 755 "$B/MaytationPrefs"
+            cp PrefsInfo.plist "$B/Info.plist"
+            cp RootEN.plist RootRU.plist "$B/"
+            cp PrefsEntry.plist pkg/Library/PreferenceLoader/Preferences/Maytation.plist
+          else
+            cp PrefsFallback.plist pkg/Library/PreferenceLoader/Preferences/Maytation.plist
+          fi
           cp control pkg/DEBIAN/control
           echo "Installed-Size: $(du -sk pkg/Library | cut -f1)" >> pkg/DEBIAN/control
-          chmod 755 pkg/Library/MobileSubstrate/DynamicLibraries/Maytation.dylib
           dpkg-deb --root-owner-group -Zlzma -b pkg out/maytation_iphoneos-arm64e.deb || dpkg-deb --root-owner-group -Zgzip -b pkg out/maytation_iphoneos-arm64e.deb
           dpkg-deb -I out/maytation_iphoneos-arm64e.deb
           dpkg-deb -c out/maytation_iphoneos-arm64e.deb
