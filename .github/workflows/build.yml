@@ -6,9 +6,10 @@ permissions:
   contents: write
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
       - name: Create tweak files
         run: |
           cat > Tweak.m <<'MAYEOF'
@@ -17,6 +18,7 @@ jobs:
           // icon list at runtime, so it survives SpringBoard changes between iOS versions.
           #import <UIKit/UIKit.h>
           #import <CoreMotion/CoreMotion.h>
+          #import <QuartzCore/QuartzCore.h>
           #include <math.h>
 
           #define kDomain CFSTR("local.maytation")
@@ -194,24 +196,48 @@ jobs:
               });
           }
           MAYEOF
-          cat > Makefile <<'MAYEOF'
-          TARGET := iphone:clang:latest:14.0
-          ARCHS = arm64 arm64e
-          INSTALL_TARGET_PROCESSES = SpringBoard
-
-          include $(THEOS)/makefiles/common.mk
-
-          TWEAK_NAME = Maytation
-          Maytation_FILES = Tweak.m
-          Maytation_FRAMEWORKS = UIKit CoreMotion
-          Maytation_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-
-          include $(THEOS_MAKE_PATH)/tweak.mk
-          MAYEOF
           cat > Maytation.plist <<'MAYEOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict><key>Filter</key><dict><key>Bundles</key><array><string>com.apple.springboard</string></array></dict></dict></plist>
+          MAYEOF
+          cat > MaytationPrefs.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>entry</key>
+            <dict>
+              <key>cell</key><string>PSLinkCell</string>
+              <key>label</key><string>Maytation</string>
+            </dict>
+            <key>title</key><string>Maytation</string>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>cell</key><string>PSGroupCell</string>
+                <key>label</key><string>Встряхни телефон, и иконки упадут</string>
+                <key>footerText</key><string>Повторное встряхивание возвращает иконки на места.</string>
+              </dict>
+              <dict>
+                <key>cell</key><string>PSSwitchCell</string>
+                <key>label</key><string>Включить Maytation</string>
+                <key>default</key><true/>
+                <key>defaults</key><string>local.maytation</string>
+                <key>key</key><string>enabled</string>
+              </dict>
+              <dict>
+                <key>cell</key><string>PSSliderCell</string>
+                <key>default</key><real>3</real>
+                <key>defaults</key><string>local.maytation</string>
+                <key>key</key><string>strength</string>
+                <key>min</key><real>0.5</real>
+                <key>max</key><real>8</real>
+                <key>showValue</key><true/>
+              </dict>
+            </array>
+          </dict>
+          </plist>
           MAYEOF
           cat > control <<'MAYEOF'
           Package: local.maytation
@@ -224,25 +250,45 @@ jobs:
           Section: Tweaks
           Depends: ellekit | mobilesubstrate
           MAYEOF
-      - name: Tools
+          ls -la
+
+      - name: Install tools
+        run: brew install ldid dpkg
+
+      - name: Compile (no Theos, plain clang from Xcode)
         run: |
-          brew install ldid dpkg make
-          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
-      - name: Theos
+          set -ex
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          COMMON="-isysroot $SDK -miphoneos-version-min=14.0 -dynamiclib -fobjc-arc -fmodules -Wno-deprecated-declarations -O2 -framework UIKit -framework CoreMotion -framework QuartzCore -framework Foundation -install_name /Library/MobileSubstrate/DynamicLibraries/Maytation.dylib"
+          if xcrun --sdk iphoneos clang -arch arm64 -arch arm64e $COMMON Tweak.m -o Maytation.dylib; then
+            echo "built arm64 + arm64e"
+          else
+            echo "arm64e failed, building arm64 only"
+            xcrun --sdk iphoneos clang -arch arm64 $COMMON Tweak.m -o Maytation.dylib
+          fi
+          ldid -S Maytation.dylib
+          lipo -info Maytation.dylib
+          otool -L Maytation.dylib
+          otool -l Maytation.dylib | grep -A4 LC_BUILD_VERSION || true
+
+      - name: Build deb (iphoneos-arm64e, rootful /Library)
         run: |
-          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
-          rm -rf "$HOME/theos/sdks"
-          git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-      - name: Build
-        run: make package FINALPACKAGE=1
-      - name: Repack as iphoneos-arm64e
-        run: |
-          mkdir -p out tmp
-          dpkg-deb -R packages/*.deb tmp/pkg
-          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64e/' tmp/pkg/DEBIAN/control
-          dpkg-deb --root-owner-group -Zgzip -b tmp/pkg out/maytation_iphoneos-arm64e.deb
-          lipo -info tmp/pkg/Library/MobileSubstrate/DynamicLibraries/Maytation.dylib || true
+          set -ex
+          mkdir -p pkg/DEBIAN pkg/Library/MobileSubstrate/DynamicLibraries pkg/Library/PreferenceLoader/Preferences out
+          cp Maytation.dylib Maytation.plist pkg/Library/MobileSubstrate/DynamicLibraries/
+          cp MaytationPrefs.plist pkg/Library/PreferenceLoader/Preferences/Maytation.plist
+          cp control pkg/DEBIAN/control
+          echo "Installed-Size: $(du -sk pkg/Library | cut -f1)" >> pkg/DEBIAN/control
+          chmod 755 pkg/Library/MobileSubstrate/DynamicLibraries/Maytation.dylib
+          dpkg-deb --root-owner-group -Zlzma -b pkg out/maytation_iphoneos-arm64e.deb || dpkg-deb --root-owner-group -Zgzip -b pkg out/maytation_iphoneos-arm64e.deb
+          dpkg-deb -I out/maytation_iphoneos-arm64e.deb
+          dpkg-deb -c out/maytation_iphoneos-arm64e.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maytation-deb
+          path: out/*.deb
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
