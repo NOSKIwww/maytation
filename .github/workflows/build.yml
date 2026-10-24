@@ -1,0 +1,251 @@
+name: Build Maytation
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create tweak files
+        run: |
+          cat > Tweak.m <<'MAYEOF'
+          // Maytation — shake the phone, home screen icons fall and bounce with gravity.
+          // No private headers and no hooks of private selectors: it finds the visible
+          // icon list at runtime, so it survives SpringBoard changes between iOS versions.
+          #import <UIKit/UIKit.h>
+          #import <CoreMotion/CoreMotion.h>
+          #include <math.h>
+
+          #define kDomain CFSTR("local.maytation")
+
+          static CMMotionManager *gMotion;
+          static UIDynamicAnimator *gAnimator;
+          static UIGravityBehavior *gGravity;
+          static __weak UIView *gList;
+          static NSMutableArray<UIView *> *gViews;
+          static NSMutableArray<NSValue *> *gCenters;
+          static BOOL gActive = NO;
+          static double gStrength = 3.0;
+          static NSTimeInterval gLastPeak = 0, gLastToggle = 0;
+
+          #pragma mark - Preferences (defaults write local.maytation enabled -bool NO)
+
+          static BOOL prefBool(CFStringRef key, BOOL def) {
+              CFPreferencesAppSynchronize(kDomain);
+              CFPropertyListRef v = CFPreferencesCopyAppValue(key, kDomain);
+              BOOL r = def;
+              if (v) {
+                  if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue(v);
+                  else if (CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue(v, kCFNumberIntType, &n); r = n != 0; }
+                  CFRelease(v);
+              }
+              return r;
+          }
+
+          static double prefDouble(CFStringRef key, double def) {
+              CFPropertyListRef v = CFPreferencesCopyAppValue(key, kDomain);
+              double r = def;
+              if (v) {
+                  if (CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue(v, kCFNumberDoubleType, &r);
+                  CFRelease(v);
+              }
+              return r;
+          }
+
+          #pragma mark - Finding the visible icon page
+
+          static void gatherLists(UIView *v, NSMutableArray *out) {
+              NSString *n = NSStringFromClass(v.class);
+              if ([n containsString:@"IconListView"] && ![n containsString:@"Dock"] && ![n containsString:@"Floating"]) {
+                  [out addObject:v];
+                  return;
+              }
+              for (UIView *s in v.subviews) gatherLists(s, out);
+          }
+
+          static UIView *visibleList(void) {
+              NSMutableArray *lists = [NSMutableArray array];
+              for (UIWindow *w in UIApplication.sharedApplication.windows) {
+                  if (w.hidden || w.alpha < 0.01) continue;
+                  gatherLists(w, lists);
+              }
+              CGRect screen = UIScreen.mainScreen.bounds;
+              UIView *best = nil;
+              CGFloat bestArea = 0;
+              for (UIView *l in lists) {
+                  if (l.hidden || l.alpha < 0.5 || !l.window) continue;
+                  CGRect r = CGRectIntersection([l convertRect:l.bounds toView:nil], screen);
+                  if (CGRectIsNull(r)) continue;
+                  CGFloat a = r.size.width * r.size.height;
+                  if (a > bestArea) { bestArea = a; best = l; }
+              }
+              return (bestArea > screen.size.width * screen.size.height * 0.25) ? best : nil;
+          }
+
+          #pragma mark - Gravity on / off
+
+          static void stopGravity(BOOL animated) {
+              if (!gActive) return;
+              gActive = NO;
+              [gMotion stopDeviceMotionUpdates];
+              [gAnimator removeAllBehaviors];
+              gAnimator = nil;
+              gGravity = nil;
+              NSArray<UIView *> *views = gViews;
+              NSArray<NSValue *> *centers = gCenters;
+              gViews = nil; gCenters = nil;
+              void (^restore)(void) = ^{
+                  for (NSUInteger i = 0; i < views.count; i++) {
+                      views[i].transform = CGAffineTransformIdentity;
+                      views[i].center = centers[i].CGPointValue;
+                  }
+              };
+              if (animated) {
+                  [UIView animateWithDuration:0.8 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:4
+                                      options:UIViewAnimationOptionAllowUserInteraction
+                                   animations:restore completion:nil];
+              } else {
+                  restore();
+              }
+          }
+
+          static void startGravity(void) {
+              if (gActive) return;
+              UIView *list = visibleList();
+              if (!list) return;
+
+              gStrength = prefDouble(CFSTR("strength"), 3.0);
+              gList = list;
+              gViews = [NSMutableArray array];
+              gCenters = [NSMutableArray array];
+              CGSize ls = list.bounds.size;
+              for (UIView *s in list.subviews) {
+                  if (s.hidden || s.alpha < 0.01) continue;
+                  if (s.bounds.size.width > ls.width * 0.9 && s.bounds.size.height > ls.height * 0.9) continue; // backgrounds
+                  [gViews addObject:s];
+                  [gCenters addObject:[NSValue valueWithCGPoint:s.center]];
+              }
+              if (gViews.count == 0) { gViews = nil; gCenters = nil; return; }
+
+              gAnimator = [[UIDynamicAnimator alloc] initWithReferenceView:list];
+              gGravity = [[UIGravityBehavior alloc] initWithItems:gViews];
+              gGravity.gravityDirection = CGVectorMake(0, gStrength / 3.0);
+              UICollisionBehavior *collision = [[UICollisionBehavior alloc] initWithItems:gViews];
+              collision.translatesReferenceBoundsIntoBoundary = YES;
+              collision.collisionMode = UICollisionBehaviorModeEverything;
+              UIDynamicItemBehavior *props = [[UIDynamicItemBehavior alloc] initWithItems:gViews];
+              props.elasticity = 0.45;
+              props.friction = 0.2;
+              props.allowsRotation = YES;
+              [gAnimator addBehavior:gGravity];
+              [gAnimator addBehavior:collision];
+              [gAnimator addBehavior:props];
+              gActive = YES;
+
+              gMotion.deviceMotionUpdateInterval = 1.0 / 30.0;
+              [gMotion startDeviceMotionUpdatesToQueue:NSOperationQueue.mainQueue
+                                           withHandler:^(CMDeviceMotion *m, NSError *e) {
+                  if (e || !m || !gActive) return;
+                  if (!gList.window) { stopGravity(NO); return; } // left the home screen
+                  gGravity.gravityDirection = CGVectorMake(m.gravity.x * gStrength, -m.gravity.y * gStrength);
+              }];
+          }
+
+          static void toggleGravity(void) {
+              if (gActive) { stopGravity(YES); return; }
+              if (!prefBool(CFSTR("enabled"), YES)) return;
+              startGravity();
+          }
+
+          #pragma mark - Shake detection (CoreMotion, no UIKit shake hooks needed)
+
+          static void handleAccel(CMAccelerometerData *d) {
+              CMAcceleration a = d.acceleration;
+              double m = sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+              if (m < 2.0) return;
+              NSTimeInterval now = CACurrentMediaTime();
+              if (now - gLastToggle < 1.5) return;
+              NSTimeInterval dt = now - gLastPeak;
+              if (dt > 0.12 && dt < 0.9) {      // two strong peaks = a shake
+                  gLastToggle = now;
+                  gLastPeak = 0;
+                  toggleGravity();
+              } else {
+                  gLastPeak = now;
+              }
+          }
+
+          __attribute__((constructor))
+          static void maytation_init(void) {
+              NSString *bid = NSBundle.mainBundle.bundleIdentifier;
+              if (![bid isEqualToString:@"com.apple.springboard"]) return;
+              NSLog(@"[Maytation] loaded in SpringBoard");
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  gMotion = [[CMMotionManager alloc] init];
+                  gMotion.accelerometerUpdateInterval = 1.0 / 30.0;
+                  [gMotion startAccelerometerUpdatesToQueue:NSOperationQueue.mainQueue
+                                                withHandler:^(CMAccelerometerData *d, NSError *e) {
+                      if (!e && d) handleAccel(d);
+                  }];
+                  NSLog(@"[Maytation] shake detector started");
+              });
+          }
+          MAYEOF
+          cat > Makefile <<'MAYEOF'
+          TARGET := iphone:clang:latest:14.0
+          ARCHS = arm64 arm64e
+          INSTALL_TARGET_PROCESSES = SpringBoard
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = Maytation
+          Maytation_FILES = Tweak.m
+          Maytation_FRAMEWORKS = UIKit CoreMotion
+          Maytation_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          MAYEOF
+          cat > Maytation.plist <<'MAYEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>Filter</key><dict><key>Bundles</key><array><string>com.apple.springboard</string></array></dict></dict></plist>
+          MAYEOF
+          cat > control <<'MAYEOF'
+          Package: local.maytation
+          Name: Maytation
+          Version: 0.1.0
+          Architecture: iphoneos-arm64e
+          Description: Shake your phone and the home screen icons fall and bounce with gravity.
+          Maintainer: Local Build
+          Author: Local Build
+          Section: Tweaks
+          Depends: ellekit | mobilesubstrate
+          MAYEOF
+      - name: Tools
+        run: |
+          brew install ldid dpkg make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Theos
+        run: |
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+          rm -rf "$HOME/theos/sdks"
+          git clone --depth=1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+      - name: Build
+        run: make package FINALPACKAGE=1
+      - name: Repack as iphoneos-arm64e
+        run: |
+          mkdir -p out tmp
+          dpkg-deb -R packages/*.deb tmp/pkg
+          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64e/' tmp/pkg/DEBIAN/control
+          dpkg-deb --root-owner-group -Zgzip -b tmp/pkg out/maytation_iphoneos-arm64e.deb
+          lipo -info tmp/pkg/Library/MobileSubstrate/DynamicLibraries/Maytation.dylib || true
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Maytation build ${{ github.run_number }}
+          files: out/*.deb
