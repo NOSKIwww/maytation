@@ -14,6 +14,7 @@ jobs:
         run: |
           cat > Tweak.m <<'MAYEOF'
           // Maytation — shake the phone, home screen icons fall and bounce with gravity.
+          // v0.2: icons also react to how you physically move the phone (accelerometer push).
           // No private headers and no hooks of private selectors: it finds the visible
           // icon list at runtime, so it survives SpringBoard changes between iOS versions.
           #import <UIKit/UIKit.h>
@@ -26,6 +27,9 @@ jobs:
           static CMMotionManager *gMotion;
           static UIDynamicAnimator *gAnimator;
           static UIGravityBehavior *gGravity;
+          static UIPushBehavior *gPush;
+          static double gMotionStrength = 1.0;
+          static BOOL gMotionEnabled = YES;
           static __weak UIView *gList;
           static NSMutableArray<UIView *> *gViews;
           static NSMutableArray<NSValue *> *gCenters;
@@ -96,6 +100,7 @@ jobs:
               [gAnimator removeAllBehaviors];
               gAnimator = nil;
               gGravity = nil;
+              gPush = nil;
               NSArray<UIView *> *views = gViews;
               NSArray<NSValue *> *centers = gCenters;
               gViews = nil; gCenters = nil;
@@ -145,6 +150,13 @@ jobs:
               [gAnimator addBehavior:gGravity];
               [gAnimator addBehavior:collision];
               [gAnimator addBehavior:props];
+
+              gMotionEnabled = prefBool(CFSTR("motion"), YES);
+              gMotionStrength = prefDouble(CFSTR("motionStrength"), 1.0);
+              gPush = [[UIPushBehavior alloc] initWithItems:gViews mode:UIPushBehaviorModeContinuous];
+              gPush.active = YES;
+              [gAnimator addBehavior:gPush];
+
               gActive = YES;
 
               gMotion.deviceMotionUpdateInterval = 1.0 / 30.0;
@@ -153,6 +165,10 @@ jobs:
                   if (e || !m || !gActive) return;
                   if (!gList.window) { stopGravity(NO); return; } // left the home screen
                   gGravity.gravityDirection = CGVectorMake(m.gravity.x * gStrength, -m.gravity.y * gStrength);
+                  if (gMotionEnabled && gPush) {
+                      gPush.pushDirection = CGVectorMake(m.userAcceleration.x * gMotionStrength * 8.0,
+                                                         -m.userAcceleration.y * gMotionStrength * 8.0);
+                  }
               }];
           }
 
@@ -204,7 +220,7 @@ jobs:
           cat > control <<'MAYEOF'
           Package: local.maytation
           Name: Maytation
-          Version: 0.1.0
+          Version: 0.2.0
           Architecture: iphoneos-arm64e
           Description: Shake your phone and the home screen icons fall and bounce with gravity.
           Maintainer: Local Build
@@ -357,6 +373,40 @@ jobs:
           			<key>showValue</key>
           			<true/>
           		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Movement</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motion</string>
+          			<key>label</key>
+          			<string>React to movement (accelerometer)</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>1.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motionStrength</string>
+          			<key>max</key>
+          			<real>4.0</real>
+          			<key>min</key>
+          			<real>0.0</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
           	</array>
           	<key>title</key>
           	<string>Maytation</string>
@@ -444,6 +494,40 @@ jobs:
           			<key>showValue</key>
           			<true/>
           		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Movement</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motion</string>
+          			<key>label</key>
+          			<string>React to movement (accelerometer)</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>1.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motionStrength</string>
+          			<key>max</key>
+          			<real>4.0</real>
+          			<key>min</key>
+          			<real>0.0</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
           	</array>
           	<key>title</key>
           	<string>Maytation</string>
@@ -503,6 +587,40 @@ jobs:
           			<real>8.0</real>
           			<key>min</key>
           			<real>0.5</real>
+          			<key>showValue</key>
+          			<true/>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSGroupCell</string>
+          			<key>label</key>
+          			<string>Movement</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSwitchCell</string>
+          			<key>default</key>
+          			<true/>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motion</string>
+          			<key>label</key>
+          			<string>React to movement (accelerometer)</string>
+          		</dict>
+          		<dict>
+          			<key>cell</key>
+          			<string>PSSliderCell</string>
+          			<key>default</key>
+          			<real>1.0</real>
+          			<key>defaults</key>
+          			<string>local.maytation</string>
+          			<key>key</key>
+          			<string>motionStrength</string>
+          			<key>max</key>
+          			<real>4.0</real>
+          			<key>min</key>
+          			<real>0.0</real>
           			<key>showValue</key>
           			<true/>
           		</dict>
